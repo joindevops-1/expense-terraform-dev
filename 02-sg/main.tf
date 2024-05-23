@@ -1,46 +1,70 @@
-module "mysql" {
+module "db" {
   source = "../../terraform-aws-securitygroup"
   project_name = var.project_name
-  sg_name = "${var.project_name}-${var.environment}-mysql"
-  sg_description = "SG for MySQL servers"
+  environment = var.environment
+  sg_description = "SG for DB MySQL Instances"
   vpc_id = data.aws_ssm_parameter.vpc_id.value
   common_tags = var.common_tags
+  sg_name = "db"
 }
 
 module "backend" {
   source = "../../terraform-aws-securitygroup"
-  sg_description = "SG for Backend servers"
   project_name = var.project_name
-  sg_name = "${var.project_name}-${var.environment}-backend"
+  environment = var.environment
+  sg_description = "SG for Backend Instances"
   vpc_id = data.aws_ssm_parameter.vpc_id.value
   common_tags = var.common_tags
+  sg_name = "backend"
 }
 
 module "frontend" {
   source = "../../terraform-aws-securitygroup"
-  sg_description = "SG for Frontend servers"
   project_name = var.project_name
-  sg_name = "${var.project_name}-${var.environment}-frontend"
+  environment = var.environment
+  sg_description = "SG for Frontend Instances"
   vpc_id = data.aws_ssm_parameter.vpc_id.value
   common_tags = var.common_tags
+  sg_name = "frontend"
 }
 
-module "vpn" {
+module "bastion" {
   source = "../../terraform-aws-securitygroup"
-  sg_description = "SG for VPN servers"
   project_name = var.project_name
-  sg_name = "${var.project_name}-${var.environment}-vpn"
-  vpc_id = data.aws_vpc.default.id
+  environment = var.environment
+  sg_description = "SG for bastion Instances"
+  vpc_id = data.aws_ssm_parameter.vpc_id.value
   common_tags = var.common_tags
+  sg_name = "bastion"
 }
 
-resource "aws_security_group_rule" "mysql_backend" {
+module "ansible" {
+  source = "../../terraform-aws-securitygroup"
+  project_name = var.project_name
+  environment = var.environment
+  sg_description = "SG for ansible Instances"
+  vpc_id = data.aws_ssm_parameter.vpc_id.value
+  common_tags = var.common_tags
+  sg_name = "ansible"
+}
+
+# DB is accepting connections from backend
+resource "aws_security_group_rule" "db_backend" {
   type              = "ingress"
   from_port         = 3306
   to_port           = 3306
   protocol          = "tcp"
-  source_security_group_id       = module.backend.sg_id
-  security_group_id = module.mysql.sg_id
+  source_security_group_id = module.backend.sg_id # source is where you are getting traffic from
+  security_group_id = module.db.sg_id
+}
+
+resource "aws_security_group_rule" "db_bastion" {
+  type              = "ingress"
+  from_port         = 3306
+  to_port           = 3306
+  protocol          = "tcp"
+  source_security_group_id = module.bastion.sg_id # source is where you are getting traffic from
+  security_group_id = module.db.sg_id
 }
 
 resource "aws_security_group_rule" "backend_frontend" {
@@ -48,7 +72,25 @@ resource "aws_security_group_rule" "backend_frontend" {
   from_port         = 8080
   to_port           = 8080
   protocol          = "tcp"
-  source_security_group_id       = module.frontend.sg_id
+  source_security_group_id = module.frontend.sg_id # source is where you are getting traffic from
+  security_group_id = module.backend.sg_id
+}
+
+resource "aws_security_group_rule" "backend_bastion" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  source_security_group_id = module.bastion.sg_id # source is where you are getting traffic from
+  security_group_id = module.backend.sg_id
+}
+
+resource "aws_security_group_rule" "backend_ansible" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  source_security_group_id = module.ansible.sg_id # source is where you are getting traffic from
   security_group_id = module.backend.sg_id
 }
 
@@ -61,20 +103,40 @@ resource "aws_security_group_rule" "frontend_public" {
   security_group_id = module.frontend.sg_id
 }
 
-resource "aws_security_group_rule" "vpn_public" {
+resource "aws_security_group_rule" "frontend_bastion" {
   type              = "ingress"
-  from_port         = 80
-  to_port           = 80
+  from_port         = 22
+  to_port           = 22
   protocol          = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
-  security_group_id = module.vpn.sg_id
+  source_security_group_id = module.bastion.sg_id # source is where you are getting traffic from
+  security_group_id = module.frontend.sg_id
 }
 
-resource "aws_security_group_rule" "mysql_vpn" {
+resource "aws_security_group_rule" "frontend_ansible" {
   type              = "ingress"
-  from_port         = 3306
-  to_port           = 3306
+  from_port         = 22
+  to_port           = 22
   protocol          = "tcp"
-  source_security_group_id       = module.vpn.sg_id
-  security_group_id = module.mysql.sg_id
+  source_security_group_id = module.ansible.sg_id # source is where you are getting traffic from
+  security_group_id = module.frontend.sg_id
 }
+
+resource "aws_security_group_rule" "bastion_public" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks = ["0.0.0.0/0"]
+  security_group_id = module.bastion.sg_id
+}
+
+resource "aws_security_group_rule" "ansible_public" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks = ["0.0.0.0/0"]
+  security_group_id = module.ansible.sg_id
+}
+
+
